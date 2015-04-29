@@ -1,0 +1,4 @@
+[package]
+name = "rustils"
+version = "0.0.1"
+authors = [ "Tomasz Dudziak <tomasz.dudziak@gmail.com>" ]
