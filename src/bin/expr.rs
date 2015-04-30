@@ -23,7 +23,7 @@ impl fmt::Display for Error {
 }
 
 #[derive(Debug,Copy,Clone)]
-enum BinOp {
+enum ArithOp {
     Mul, Mod, Div,
     Add, Sub,
     Lower, LowerEq, Equal, NEqual, GreaterEq, Greater,
@@ -32,36 +32,56 @@ enum BinOp {
 #[derive(Debug)]
 enum Expr {
     Literal(String),
-    BinOp(BinOp, Box<Expr>, Box<Expr>),
+    ArithOp(ArithOp, Box<Expr>, Box<Expr>), // arithmetic binary operators
+    And(Box<Expr>, Box<Expr>), // `&' operator (works both on strings & ints)
+    Or(Box<Expr>, Box<Expr>),  // `|' operator (works both on strings & ints)
 }
 
 impl Expr {
-    fn eval_binop(op: BinOp, a: i64, b: i64) -> Result<i64, Error> {
+    fn eval_arith(op: ArithOp, a: i64, b: i64) -> Result<i64, Error> {
         match op {
-            BinOp::Mul => Ok(a * b),
-            BinOp::Mod => Ok(a % b),
-            BinOp::Div => if b == 0 { Err(Error::EvalError) }
+            ArithOp::Mul => Ok(a * b),
+            ArithOp::Mod => Ok(a % b),
+            ArithOp::Div => if b == 0 { Err(Error::EvalError) }
                                else { Ok(a / b) },
-            BinOp::Add => Ok(a + b),
-            BinOp::Sub => Ok(a - b),
-            BinOp::Lower => Ok((a < b) as i64),
-            BinOp::LowerEq => Ok((a <= b) as i64),
-            BinOp::Equal => Ok((a == b) as i64),
-            BinOp::NEqual => Ok((a != b) as i64),
-            BinOp::Greater => Ok((a > b) as i64),
-            BinOp::GreaterEq => Ok((a >= b) as i64),
+            ArithOp::Add => Ok(a + b),
+            ArithOp::Sub => Ok(a - b),
+            ArithOp::Lower => Ok((a < b) as i64),
+            ArithOp::LowerEq => Ok((a <= b) as i64),
+            ArithOp::Equal => Ok((a == b) as i64),
+            ArithOp::NEqual => Ok((a != b) as i64),
+            ArithOp::Greater => Ok((a > b) as i64),
+            ArithOp::GreaterEq => Ok((a >= b) as i64),
         }
+    }
+
+    fn bool_val(x: &str) -> bool {
+        x.parse().map(|x: i64| x != 0).unwrap_or(x != "")
     }
 
     fn eval(&self) -> Result<String, Error> {
         match self {
             &Expr::Literal(ref x) => Ok(x.to_string()),
-            &Expr::BinOp(op, ref ba, ref bb) => {
+            &Expr::ArithOp(op, ref ba, ref bb) => {
                 let str_a = try!(ba.eval());
                 let val_a = try!(str_a.parse().map_err(|_| Error::EvalError));
                 let str_b = try!(bb.eval());
                 let val_b = try!(str_b.parse().map_err(|_| Error::EvalError));
-                Expr::eval_binop(op, val_a, val_b).map(|x| x.to_string())
+                Expr::eval_arith(op, val_a, val_b).map(|x| x.to_string())
+            }
+            &Expr::And(ref ba, ref bb) => {
+                let val_a = try!(ba.eval());
+                let val_b = try!(bb.eval());
+                if Expr::bool_val(&val_a) && Expr::bool_val(&val_b) {
+                    Ok(val_a)
+                } else {
+                    Ok("0".to_string())
+                }
+            }
+            &Expr::Or(ref ba, ref bb) => {
+                let val_a = try!(ba.eval());
+                let val_b = try!(bb.eval());
+                if Expr::bool_val(&val_a) { Ok(val_a) } else { Ok(val_b) }
             }
         }
     }
@@ -69,7 +89,7 @@ impl Expr {
 
 struct Parser<T> where T: Iterator<Item=String> {
     tokens: Peekable<T>,
-    bin_ops: Vec<Vec<(&'static str, BinOp)>>,
+    bin_ops: Vec<Vec<(&'static str, ArithOp)>>,
 }
 
 impl <T> Parser<T> where T: Iterator<Item=String> {
@@ -96,12 +116,12 @@ impl <T> Parser<T> where T: Iterator<Item=String> {
         }
     }
 
-    fn parse_binop(&mut self, level: usize) -> Result<Expr, Error> {
+    fn parse_arith_op(&mut self, level: usize) -> Result<Expr, Error> {
         let sub_a: Expr =
             if level == 0 {
                 try!(self.parse_atom())
             } else {
-                try!(self.parse_binop(level-1))
+                try!(self.parse_arith_op(level-1))
             };
 
         let op_token = match self.tokens.peek() {
@@ -109,20 +129,54 @@ impl <T> Parser<T> where T: Iterator<Item=String> {
             None => return Ok(sub_a),
         };
 
-        // find appropriate BinOp in the operator table
+        // find appropriate ArithOp in the operator table
         let op = match self.bin_ops[level].iter().find(|p| *p.0 == op_token) {
             Some(p) => p.1,
             None => return Ok(sub_a),
         };
 
         self.tokens.next();
-        let sub_b = try!(self.parse_binop(level));
-        Ok(Expr::BinOp(op, Box::new(sub_a), Box::new(sub_b)))
+        let sub_b = try!(self.parse_arith_op(level));
+        Ok(Expr::ArithOp(op, Box::new(sub_a), Box::new(sub_b)))
+    }
+
+    fn parse_arith(&mut self) -> Result<Expr, Error> {
+        let idx = self.bin_ops.len() - 1;
+        self.parse_arith_op(idx)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, Error> {
+        let sub_a = try!(self.parse_arith());
+
+        let op_token = match self.tokens.peek() {
+            Some(tok) => tok.to_string(),
+            None => return Ok(sub_a),
+        };
+
+        if op_token != "&" {
+            return Ok(sub_a)
+        }
+
+        self.tokens.next();
+        let sub_b = try!(self.parse_and());
+        Ok(Expr::And(Box::new(sub_a), Box::new(sub_b)))
     }
 
     fn parse_expr(&mut self) -> Result<Expr, Error> {
-        let idx = self.bin_ops.len() - 1;
-        self.parse_binop(idx)
+        let sub_a = try!(self.parse_and());
+
+        let op_token = match self.tokens.peek() {
+            Some(tok) => tok.to_string(),
+            None => return Ok(sub_a),
+        };
+
+        if op_token != "|" {
+            return Ok(sub_a)
+        }
+
+        self.tokens.next();
+        let sub_b = try!(self.parse_and());
+        Ok(Expr::Or(Box::new(sub_a), Box::new(sub_b)))
     }
 
     fn parse(&mut self) -> Result<Expr, Error> {
@@ -137,11 +191,11 @@ impl <T> Parser<T> where T: Iterator<Item=String> {
         Parser {
             tokens: itr.peekable(),
             bin_ops: vec![
-                vec![("*", BinOp::Mul), ("%", BinOp::Mod), ("/", BinOp::Div)],
-                vec![("+", BinOp::Add), ("-", BinOp::Sub)],
-                vec![("<", BinOp::Lower), ("<=", BinOp::LowerEq),
-                     ("=", BinOp::Equal), ("!=", BinOp::NEqual),
-                     (">", BinOp::Greater), (">=", BinOp::GreaterEq)],
+                vec![("*", ArithOp::Mul), ("%", ArithOp::Mod), ("/", ArithOp::Div)],
+                vec![("+", ArithOp::Add), ("-", ArithOp::Sub)],
+                vec![("<", ArithOp::Lower), ("<=", ArithOp::LowerEq),
+                     ("=", ArithOp::Equal), ("!=", ArithOp::NEqual),
+                     (">", ArithOp::Greater), (">=", ArithOp::GreaterEq)],
             ],
         }
     }
