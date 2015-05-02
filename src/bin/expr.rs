@@ -103,15 +103,51 @@ struct Token(String);
 
 struct Literal;
 
-struct PairParser<T, A, B> {
-    left: Box<Parser<T, A>>,
-    right: Box<Parser<T, B>>,
-}
+struct PairParser<T, A, B>(Box<Parser<T, A>>, Box<Parser<T, B>>);
 
 struct Operator<T> {
     op_token: String,
     op_func: Box<Fn(Box<Expr>, Box<Expr>) -> Expr>,
     sub_parser: Box<Parser<T, Expr>>
+}
+
+struct Map<T, F, A, B>(Box<Parser<T, A>>, F)
+    where T: Iterator, F: Fn(A) -> B;
+
+impl <T, F, A, B> Parser<T, B> for Map<T, F, A, B>
+    where T: Iterator, F: Fn(A) -> B
+{
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<B, Error> {
+        let &Map(ref b_parser, ref f) = self;
+        b_parser.parse(itr).map(f)
+    }
+}
+
+fn operator<TFunc, T>(
+        op_token: &str, op_func: TFunc, sub_parser: Box<Parser<T, Expr>>
+    ) -> Operator<T> where TFunc: Fn(Box<Expr>, Box<Expr>) -> Expr + 'static {
+
+    Operator {
+        op_token: op_token.to_string(),
+        op_func: Box::new(op_func),
+        sub_parser: sub_parser,
+    }
+}
+
+struct Alternative<T, TRes>(Box<Parser<T,TRes>>, Box<Parser<T,TRes>>)
+    where T: Iterator;
+
+impl <T, TRes> Parser<T, TRes> for Alternative<T, TRes> where T: Iterator
+{
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<TRes, Error> {
+        let &Alternative(ref p_a, ref p_b) = self;
+        match p_a.parse(itr) {
+            Ok(x) => return Ok(x),
+            x @ Err(Error::ParseError) => x, // ignored
+            Err(err) => return Err(err),
+        };
+        p_b.parse(itr).map_err(make_fatal)
+    }
 }
 
 struct OptionParser<T, J> {
@@ -153,11 +189,12 @@ impl <T> Parser<T, Expr> for Literal where T: Iterator<Item=String> {
 
 impl <T, A, B> Parser<T, (A, B)> for PairParser<T, A, B> where T: Iterator {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<(A, B), Error> {
-        let res_left = try!(self.left.parse(itr));
+        let &PairParser(ref left, ref right) = self;
+        let res_left = try!(left.parse(itr));
 
         // res_left already advanced the iterator so errors in res_right are
         // promoted to fatal
-        let res_right = match self.right.parse(itr) {
+        let res_right = match right.parse(itr) {
             Err(Error::ParseError) => return Err(Error::FatalParseError),
             Err(x) => return Err(x),
             Ok(x) => x,
@@ -171,7 +208,7 @@ impl <T> Parser<T, Expr> for Operator<T> where T: Iterator<Item=String> {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
         let left = try!(self.sub_parser.parse(itr));
         let p_op = Token(self.op_token.clone());
-        let op = match p_op.parse(itr) {
+        match p_op.parse(itr) {
             Ok(x) => x,
             Err(Error::ParseError) => return Ok(left),
             Err(x) => return Err(x),
@@ -191,37 +228,48 @@ impl <T, J> Parser<T, Option<J>> for OptionParser<T, J> where T: Iterator {
     }
 }
 
+struct ExprParser<T>(std::marker::PhantomData<T>)
+    where T: Iterator<Item=String> + 'static;
+
+impl <T> Parser<T, Expr> for ExprParser<T>
+    where T: Iterator<Item=String> + 'static
+{
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
+        // recursively parse '(' Expr ')'
+        let recur = PairParser(
+            Box::new(Token("(".to_string())),
+            Box::new(PairParser(
+                Box::new(ExprParser(std::marker::PhantomData)),
+                Box::new(Token(")".to_string()))
+            )));
+
+        let mut parser: Box<Parser<_, Expr>> =
+            Box::new(Alternative(
+                    Box::new(Literal),
+                    Box::new(Map(Box::new(recur), |(_,(x,_))| x))));
+
+        let arith_ops = vec![
+            ("*", ArithOp::Mul), ("%", ArithOp::Mod), ("/", ArithOp::Div),
+            ("+", ArithOp::Add), ("-", ArithOp::Sub),
+            ("<", ArithOp::Lower), ("<=", ArithOp::LowerEq),
+            ("=", ArithOp::Equal), ("!=", ArithOp::NEqual),
+            (">", ArithOp::Greater), (">=", ArithOp::GreaterEq),
+        ];
+        for (op, ao) in arith_ops {
+        let op_func = move |a,b| Expr::ArithOp(ao, a, b);
+        parser = Box::new(operator(op, op_func, parser));
+        }
+
+        parser = Box::new(operator("&", |a,b| Expr::And(a,b), parser));
+        parser = Box::new(operator("|", |a,b| Expr::Or(a,b), parser));
+
+        parser.parse(itr)
+    }
+}
+
 fn main() {
     let mut itr = env::args().skip(1).peekable();
-    let mut parser: Box<Parser<_, Expr>> = Box::new(Literal);
-
-    let arith_ops = vec![
-        ("*", ArithOp::Mul), ("%", ArithOp::Mod), ("/", ArithOp::Div),
-        ("+", ArithOp::Add), ("-", ArithOp::Sub),
-        ("<", ArithOp::Lower), ("<=", ArithOp::LowerEq),
-        ("=", ArithOp::Equal), ("!=", ArithOp::NEqual),
-        (">", ArithOp::Greater), (">=", ArithOp::GreaterEq),
-    ];
-    for (op, ao) in arith_ops {
-        parser = Box::new(Operator {
-            op_token: op.to_string(),
-            op_func: Box::new(move |a,b| Expr::ArithOp(ao, a, b)),
-            sub_parser: parser,
-        });
-    }
-
-    parser = Box::new(Operator {
-        op_token: "&".to_string(),
-        op_func: Box::new(|a,b| Expr::And(a, b)),
-        sub_parser: parser,
-    });
-
-    parser = Box::new(Operator {
-        op_token: "|".to_string(),
-        op_func: Box::new(|a,b| Expr::Or(a, b)),
-        sub_parser: parser,
-    });
-
+    let parser = ExprParser(std::marker::PhantomData);
     let expr = parser.parse(&mut itr).unwrap();
-    println!("{:?} {}", expr, expr.eval().unwrap());
+    println!("{}", expr.eval().unwrap());
 }
