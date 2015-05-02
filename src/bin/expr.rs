@@ -95,122 +95,6 @@ impl Expr {
     }
 }
 
-/*
-struct Parser<T> where T: Iterator<Item=String> {
-    tokens: Peekable<T>,
-    bin_ops: Vec<Vec<(&'static str, ArithOp)>>,
-}
-
-impl <T> Parser<T> where T: Iterator<Item=String> {
-    fn parse_atom(&mut self) -> Result<Expr, Error> {
-        if self.tokens.peek() == Some(&"(".to_string()) {
-            // try to parse a parenthesized subexpression
-            self.tokens.next();
-            let sub = try!(self.parse_expr());
-            if self.tokens.next() != Some(")".to_string()) {
-                return Err(Error::ParseError)
-            }
-            Ok(sub)
-        } else {
-            let tok = match self.tokens.next() {
-                Some(x) => x,
-                None    => return Err(Error::ParseError),
-            };
-
-            if tok.chars().all(|x| x.is_alphanumeric()) {
-                Ok(Expr::Literal(tok))
-            } else {
-                Err(Error::ParseError)
-            }
-        }
-    }
-
-    fn parse_arith_op(&mut self, level: usize) -> Result<Expr, Error> {
-        let sub_a: Expr =
-            if level == 0 {
-                try!(self.parse_atom())
-            } else {
-                try!(self.parse_arith_op(level-1))
-            };
-
-        let op_token = match self.tokens.peek() {
-            Some(tok) => tok.to_string(),
-            None => return Ok(sub_a),
-        };
-
-        // find appropriate ArithOp in the operator table
-        let op = match self.bin_ops[level].iter().find(|p| *p.0 == op_token) {
-            Some(p) => p.1,
-            None => return Ok(sub_a),
-        };
-
-        self.tokens.next();
-        let sub_b = try!(self.parse_arith_op(level));
-        Ok(Expr::ArithOp(op, Box::new(sub_a), Box::new(sub_b)))
-    }
-
-    fn parse_arith(&mut self) -> Result<Expr, Error> {
-        let idx = self.bin_ops.len() - 1;
-        self.parse_arith_op(idx)
-    }
-
-    fn parse_and(&mut self) -> Result<Expr, Error> {
-        let sub_a = try!(self.parse_arith());
-
-        let op_token = match self.tokens.peek() {
-            Some(tok) => tok.to_string(),
-            None => return Ok(sub_a),
-        };
-
-        if op_token != "&" {
-            return Ok(sub_a)
-        }
-
-        self.tokens.next();
-        let sub_b = try!(self.parse_and());
-        Ok(Expr::And(Box::new(sub_a), Box::new(sub_b)))
-    }
-
-    fn parse_expr(&mut self) -> Result<Expr, Error> {
-        let sub_a = try!(self.parse_and());
-
-        let op_token = match self.tokens.peek() {
-            Some(tok) => tok.to_string(),
-            None => return Ok(sub_a),
-        };
-
-        if op_token != "|" {
-            return Ok(sub_a)
-        }
-
-        self.tokens.next();
-        let sub_b = try!(self.parse_and());
-        Ok(Expr::Or(Box::new(sub_a), Box::new(sub_b)))
-    }
-
-    fn parse(&mut self) -> Result<Expr, Error> {
-        let expr = try!(self.parse_expr());
-        match self.tokens.peek() {
-            Some(_) => Err(Error::ParseError), // unused input
-            None    => Ok(expr)
-        }
-    }
-
-    fn new(itr: T) -> Parser<T> {
-        Parser {
-            tokens: itr.peekable(),
-            bin_ops: vec![
-                vec![("*", ArithOp::Mul), ("%", ArithOp::Mod), ("/", ArithOp::Div)],
-                vec![("+", ArithOp::Add), ("-", ArithOp::Sub)],
-                vec![("<", ArithOp::Lower), ("<=", ArithOp::LowerEq),
-                     ("=", ArithOp::Equal), ("!=", ArithOp::NEqual),
-                     (">", ArithOp::Greater), (">=", ArithOp::GreaterEq)],
-            ],
-        }
-    }
-}
-*/
-
 trait Parser<T, TRes> where T: Iterator {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<TRes, Error>;
 }
@@ -309,32 +193,35 @@ impl <T, J> Parser<T, Option<J>> for OptionParser<T, J> where T: Iterator {
 
 fn main() {
     let mut itr = env::args().skip(1).peekable();
+    let mut parser: Box<Parser<_, Expr>> = Box::new(Literal);
 
-    let mut parser = Box::new(Literal);
-
-    let op_and = Operator {
-        op_token: "&".to_string(),
-        op_func: Box::new(|a,b| Expr::And(a, b)),
-        sub_parser: Box::new(Literal),
-    };
-
-    let op_or = Operator {
-        op_token: "|".to_string(),
-        op_func: Box::new(|a,b| Expr::Or(a, b)),
-        sub_parser: Box::new(op_and),
-    };
-
-    let rels = vec![("<", ArithOp::Lower), ("<=", ArithOp::LowerEq),
-                    ("=", ArithOp::Equal), ("!=", ArithOp::NEqual),
-                    (">", ArithOp::Greater), (">=", ArithOp::GreaterEq)];
-    let mut rel_ops = Box::new(op_or);
-    for (op, ao) in rels {
-        rel_ops = Box::new(Operator {
+    let arith_ops = vec![
+        ("*", ArithOp::Mul), ("%", ArithOp::Mod), ("/", ArithOp::Div),
+        ("+", ArithOp::Add), ("-", ArithOp::Sub),
+        ("<", ArithOp::Lower), ("<=", ArithOp::LowerEq),
+        ("=", ArithOp::Equal), ("!=", ArithOp::NEqual),
+        (">", ArithOp::Greater), (">=", ArithOp::GreaterEq),
+    ];
+    for (op, ao) in arith_ops {
+        parser = Box::new(Operator {
             op_token: op.to_string(),
             op_func: Box::new(move |a,b| Expr::ArithOp(ao, a, b)),
-            sub_parser: rel_ops,
+            sub_parser: parser,
         });
     }
 
-    println!("{:?}", rel_ops.parse(&mut itr));
+    parser = Box::new(Operator {
+        op_token: "&".to_string(),
+        op_func: Box::new(|a,b| Expr::And(a, b)),
+        sub_parser: parser,
+    });
+
+    parser = Box::new(Operator {
+        op_token: "|".to_string(),
+        op_func: Box::new(|a,b| Expr::Or(a, b)),
+        sub_parser: parser,
+    });
+
+    let expr = parser.parse(&mut itr).unwrap();
+    println!("{:?} {}", expr, expr.eval().unwrap());
 }
