@@ -5,12 +5,20 @@ use std::error;
 use std::iter::Peekable;
 
 #[derive(Debug)]
-enum Error { ParseError, EvalError }
+enum Error { ParseError, FatalParseError, EvalError }
+
+fn make_fatal(err: Error) -> Error {
+    match err {
+        Error::ParseError => Error::FatalParseError,
+        x => x,
+    }
+}
 
 impl error::Error for Error {
     fn description(&self) -> &str {
         match self {
             &Error::ParseError => "invalid expression",
+            &Error::FatalParseError => "invalid expression",
             &Error::EvalError => "invalid value"
         }
     }
@@ -87,6 +95,7 @@ impl Expr {
     }
 }
 
+/*
 struct Parser<T> where T: Iterator<Item=String> {
     tokens: Peekable<T>,
     bin_ops: Vec<Vec<(&'static str, ArithOp)>>,
@@ -200,8 +209,132 @@ impl <T> Parser<T> where T: Iterator<Item=String> {
         }
     }
 }
+*/
+
+trait Parser<T, TRes> where T: Iterator {
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<TRes, Error>;
+}
+
+struct Token(String);
+
+struct Literal;
+
+struct PairParser<T, A, B> {
+    left: Box<Parser<T, A>>,
+    right: Box<Parser<T, B>>,
+}
+
+struct Operator<T> {
+    op_token: String,
+    op_func: Box<Fn(Box<Expr>, Box<Expr>) -> Expr>,
+    sub_parser: Box<Parser<T, Expr>>
+}
+
+struct OptionParser<T, J> {
+    sub_parser: Box<Parser<T, J>>
+}
+
+impl <T> Parser<T, String> for Token where T: Iterator<Item=String> {
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<String, Error> {
+        let &Token(ref self_tok) = self;
+        let tok: String = match itr.peek() {
+            Some(x) => x.clone(),
+            None => return Err(Error::ParseError),
+        };
+
+        if tok == self_tok.to_string() {
+            itr.next();
+            Ok(tok)
+        } else {
+            Err(Error::ParseError)
+        }
+    }
+}
+
+impl <T> Parser<T, Expr> for Literal where T: Iterator<Item=String> {
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
+        let tok = match itr.peek() {
+            Some(x) => x.clone(),
+            None    => return Err(Error::ParseError),
+        };
+
+        if tok.chars().all(|x| x.is_alphanumeric()) {
+            itr.next();
+            Ok(Expr::Literal(tok))
+        } else {
+            Err(Error::ParseError)
+        }
+    }
+}
+
+impl <T, A, B> Parser<T, (A, B)> for PairParser<T, A, B> where T: Iterator {
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<(A, B), Error> {
+        let res_left = try!(self.left.parse(itr));
+
+        // res_left already advanced the iterator so errors in res_right are
+        // promoted to fatal
+        let res_right = match self.right.parse(itr) {
+            Err(Error::ParseError) => return Err(Error::FatalParseError),
+            Err(x) => return Err(x),
+            Ok(x) => x,
+        };
+
+        Ok((res_left, res_right))
+    }
+}
+
+impl <T> Parser<T, Expr> for Operator<T> where T: Iterator<Item=String> {
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
+        let left = try!(self.sub_parser.parse(itr));
+        let p_op = Token(self.op_token.clone());
+        let op = match p_op.parse(itr) {
+            Ok(x) => x,
+            Err(Error::ParseError) => return Ok(left),
+            Err(x) => return Err(x),
+        };
+        let right = try!(self.parse(itr).map_err(make_fatal));
+        Ok((self.op_func)(Box::new(left), Box::new(right)))
+    }
+}
+
+impl <T, J> Parser<T, Option<J>> for OptionParser<T, J> where T: Iterator {
+    fn parse(&self, itr: &mut Peekable<T>) -> Result<Option<J>, Error> {
+        match self.sub_parser.parse(itr) {
+            Ok(x) => return Ok(Some(x)),
+            Err(Error::ParseError) => return Ok(None),
+            Err(e) => return Err(e)
+        }
+    }
+}
 
 fn main() {
-    let expr = Parser::new(env::args().skip(1)).parse().unwrap();
-    println!("{}", expr.eval().unwrap());
+    let mut itr = env::args().skip(1).peekable();
+
+    let mut parser = Box::new(Literal);
+
+    let op_and = Operator {
+        op_token: "&".to_string(),
+        op_func: Box::new(|a,b| Expr::And(a, b)),
+        sub_parser: Box::new(Literal),
+    };
+
+    let op_or = Operator {
+        op_token: "|".to_string(),
+        op_func: Box::new(|a,b| Expr::Or(a, b)),
+        sub_parser: Box::new(op_and),
+    };
+
+    let rels = vec![("<", ArithOp::Lower), ("<=", ArithOp::LowerEq),
+                    ("=", ArithOp::Equal), ("!=", ArithOp::NEqual),
+                    (">", ArithOp::Greater), (">=", ArithOp::GreaterEq)];
+    let mut rel_ops = Box::new(op_or);
+    for (op, ao) in rels {
+        rel_ops = Box::new(Operator {
+            op_token: op.to_string(),
+            op_func: Box::new(move |a,b| Expr::ArithOp(ao, a, b)),
+            sub_parser: rel_ops,
+        });
+    }
+
+    println!("{:?}", rel_ops.parse(&mut itr));
 }
