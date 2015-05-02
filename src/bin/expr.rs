@@ -95,7 +95,7 @@ impl Expr {
     }
 }
 
-trait Parser<T, TRes> where T: Iterator {
+trait Parser<T: Iterator, TRes> {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<TRes, Error>;
 }
 
@@ -111,22 +111,19 @@ struct Operator<T> {
     sub_parser: Box<Parser<T, Expr>>
 }
 
-struct Map<T, F, A, B>(Box<Parser<T, A>>, F)
-    where T: Iterator, F: Fn(A) -> B;
+struct Map<T: Iterator, F: Fn(A) -> B, A, B>(Box<Parser<T, A>>, F);
 
-impl <T, F, A, B> Parser<T, B> for Map<T, F, A, B>
-    where T: Iterator, F: Fn(A) -> B
-{
+impl <T: Iterator, F: Fn(A) -> B, A, B> Parser<T, B> for Map<T, F, A, B> {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<B, Error> {
         let &Map(ref b_parser, ref f) = self;
         b_parser.parse(itr).map(f)
     }
 }
 
-fn operator<TFunc, T>(
+fn operator<TFunc: Fn(Box<Expr>, Box<Expr>) -> Expr + 'static, T>(
         op_token: &str, op_func: TFunc, sub_parser: Box<Parser<T, Expr>>
-    ) -> Operator<T> where TFunc: Fn(Box<Expr>, Box<Expr>) -> Expr + 'static {
-
+    ) -> Operator<T>
+{
     Operator {
         op_token: op_token.to_string(),
         op_func: Box::new(op_func),
@@ -134,11 +131,9 @@ fn operator<TFunc, T>(
     }
 }
 
-struct Alternative<T, TRes>(Box<Parser<T,TRes>>, Box<Parser<T,TRes>>)
-    where T: Iterator;
+struct Alternative<T: Iterator, TRes>(Box<Parser<T,TRes>>, Box<Parser<T,TRes>>);
 
-impl <T, TRes> Parser<T, TRes> for Alternative<T, TRes> where T: Iterator
-{
+impl <T: Iterator, TRes> Parser<T, TRes> for Alternative<T, TRes> {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<TRes, Error> {
         let &Alternative(ref p_a, ref p_b) = self;
         match p_a.parse(itr) {
@@ -154,7 +149,7 @@ struct OptionParser<T, J> {
     sub_parser: Box<Parser<T, J>>
 }
 
-impl <T> Parser<T, String> for Token where T: Iterator<Item=String> {
+impl <T: Iterator<Item=String>> Parser<T, String> for Token {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<String, Error> {
         let &Token(ref self_tok) = self;
         let tok: String = match itr.peek() {
@@ -171,7 +166,7 @@ impl <T> Parser<T, String> for Token where T: Iterator<Item=String> {
     }
 }
 
-impl <T> Parser<T, Expr> for Literal where T: Iterator<Item=String> {
+impl <T: Iterator<Item=String>> Parser<T, Expr> for Literal {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
         let tok = match itr.peek() {
             Some(x) => x.clone(),
@@ -187,7 +182,7 @@ impl <T> Parser<T, Expr> for Literal where T: Iterator<Item=String> {
     }
 }
 
-impl <T, A, B> Parser<T, (A, B)> for PairParser<T, A, B> where T: Iterator {
+impl <T: Iterator, A, B> Parser<T, (A, B)> for PairParser<T, A, B> {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<(A, B), Error> {
         let &PairParser(ref left, ref right) = self;
         let res_left = try!(left.parse(itr));
@@ -204,7 +199,7 @@ impl <T, A, B> Parser<T, (A, B)> for PairParser<T, A, B> where T: Iterator {
     }
 }
 
-impl <T> Parser<T, Expr> for Operator<T> where T: Iterator<Item=String> {
+impl <T: Iterator<Item=String>> Parser<T, Expr> for Operator<T> {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
         let left = try!(self.sub_parser.parse(itr));
         let p_op = Token(self.op_token.clone());
@@ -218,7 +213,7 @@ impl <T> Parser<T, Expr> for Operator<T> where T: Iterator<Item=String> {
     }
 }
 
-impl <T, J> Parser<T, Option<J>> for OptionParser<T, J> where T: Iterator {
+impl <T: Iterator, J> Parser<T, Option<J>> for OptionParser<T, J> {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<Option<J>, Error> {
         match self.sub_parser.parse(itr) {
             Ok(x) => return Ok(Some(x)),
@@ -228,11 +223,9 @@ impl <T, J> Parser<T, Option<J>> for OptionParser<T, J> where T: Iterator {
     }
 }
 
-struct ExprParser<T>(std::marker::PhantomData<T>)
-    where T: Iterator<Item=String> + 'static;
+struct ExprParser<T: Iterator<Item=String> + 'static>(std::marker::PhantomData<T>);
 
-impl <T> Parser<T, Expr> for ExprParser<T>
-    where T: Iterator<Item=String> + 'static
+impl <T: Iterator<Item=String> + 'static> Parser<T, Expr> for ExprParser<T>
 {
     fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
         // recursively parse '(' Expr ')'
