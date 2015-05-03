@@ -112,7 +112,7 @@ impl<I: Iterator, O> Parser for Box<Parser<Itr=I,Res=O>> {
     }
 }
 
-struct Token<T>(String, PhantomData<T>);
+struct Token<T: Iterator>(T::Item, PhantomData<T>);
 
 struct Literal<T>(PhantomData<T>);
 
@@ -170,18 +170,18 @@ impl<P: Parser> Parser for ParseAll<P> {
 
 struct OptionParser<P: Parser>(P);
 
-impl<T: Iterator<Item=String>> Parser for Token<T> {
+impl<T: Iterator> Parser for Token<T> where T::Item: Eq + Clone {
     type Itr = T;
-    type Res = String;
+    type Res = T::Item;
 
-    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<String, Error> {
+    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Self::Res, Error> {
         let &Token(ref self_tok, _) = self;
-        let tok: String = match itr.peek() {
+        let tok: Self::Res = match itr.peek() {
             Some(x) => x.clone(),
             None => return Err(Error::ParseError),
         };
 
-        if tok == self_tok.to_string() {
+        if &tok == self_tok {
             itr.next();
             Ok(tok)
         } else {
