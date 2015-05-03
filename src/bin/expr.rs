@@ -103,48 +103,45 @@ trait Parser {
     fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Self::Res, Error>;
 }
 
+impl<I: Iterator, O> Parser for Box<Parser<Itr=I,Res=O>> {
+    type Itr = I;
+    type Res = O;
+
+    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Self::Res, Error> {
+        (**self).parse(itr)
+    }
+}
+
 struct Token<T>(String, PhantomData<T>);
 
 struct Literal<T>(PhantomData<T>);
 
-struct PairParser<T, A, B>(Box<Parser<Itr=T, Res=A>>, Box<Parser<Itr=T, Res=B>>);
+struct PairParser<A: Parser, B: Parser>(A, B);
 
-struct Operator<T> {
-    op_token: String,
-    op_func: Box<Fn(Box<Expr>, Box<Expr>) -> Expr>,
-    sub_parser: Box<Parser<Itr=T, Res=Expr>>
-}
+struct Operator<P: Parser, F>(String, F, P);
 
-struct Map<T: Iterator, F: Fn(A) -> B, A, B>(Box<Parser<Itr=T, Res=A>>, F);
+struct Map<P: Parser, Out, F: Fn(P::Res) -> Out>(P, F);
 
-impl <T: Iterator, F: Fn(A) -> B, A, B> Parser for Map<T, F, A, B> {
-    type Itr = T;
-    type Res = B;
+impl <P: Parser, Out, F: Fn(P::Res) -> Out> Parser for Map<P, Out, F> {
+    type Itr = P::Itr;
+    type Res = Out;
 
-    fn parse(&self, itr: &mut Peekable<T>) -> Result<B, Error> {
+    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Out, Error> {
         let &Map(ref b_parser, ref f) = self;
         b_parser.parse(itr).map(f)
     }
 }
 
-fn operator<TFunc: Fn(Box<Expr>, Box<Expr>) -> Expr + 'static, T>(
-        op_token: &str, op_func: TFunc, sub_parser: Box<Parser<Itr=T, Res=Expr>>
-    ) -> Operator<T>
+struct Alternative<A: Parser, B: Parser>(A, B);
+
+impl <A, B> Parser for Alternative<A, B> where
+    A: Parser,
+    B: Parser<Itr=A::Itr, Res=A::Res>
 {
-    Operator {
-        op_token: op_token.to_string(),
-        op_func: Box::new(op_func),
-        sub_parser: sub_parser,
-    }
-}
+    type Itr = A::Itr;
+    type Res = A::Res;
 
-struct Alternative<T: Iterator, TRes>(Box<Parser<Itr=T,Res=TRes>>, Box<Parser<Itr=T,Res=TRes>>);
-
-impl <T: Iterator, TRes> Parser for Alternative<T, TRes> {
-    type Itr = T;
-    type Res = TRes;
-
-    fn parse(&self, itr: &mut Peekable<T>) -> Result<TRes, Error> {
+    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Self::Res, Error> {
         let &Alternative(ref p_a, ref p_b) = self;
         match p_a.parse(itr) {
             Ok(x) => return Ok(x),
@@ -155,9 +152,7 @@ impl <T: Iterator, TRes> Parser for Alternative<T, TRes> {
     }
 }
 
-struct OptionParser<T, J> {
-    sub_parser:Box<Parser<Itr=T,Res=J>>
-}
+struct OptionParser<P: Parser>(P);
 
 impl<T: Iterator<Item=String>> Parser for Token<T> {
     type Itr = T;
@@ -198,11 +193,14 @@ impl<T: Iterator<Item=String>> Parser for Literal<T> {
     }
 }
 
-impl <T: Iterator, A, B> Parser for PairParser<T, A, B> {
-    type Itr = T;
-    type Res = (A, B);
+impl <A, B> Parser for PairParser<A, B> where
+    A: Parser,
+    B: Parser<Itr=A::Itr>
+{
+    type Itr = A::Itr;
+    type Res = (A::Res, B::Res);
 
-    fn parse(&self, itr: &mut Peekable<T>) -> Result<(A, B), Error> {
+    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Self::Res, Error> {
         let &PairParser(ref left, ref right) = self;
         let res_left = try!(left.parse(itr));
 
@@ -218,29 +216,35 @@ impl <T: Iterator, A, B> Parser for PairParser<T, A, B> {
     }
 }
 
-impl <T: Iterator<Item=String>> Parser for Operator<T> {
-    type Itr = T;
+impl <I, P, F> Parser for Operator<P, F> where
+    I: Iterator<Item=String>,
+    P: Parser<Itr=I, Res=Expr>,
+    F: Fn(Box<Expr>, Box<Expr>) -> Expr
+{
+    type Itr = P::Itr;
     type Res = Expr;
 
-    fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
-        let left = try!(self.sub_parser.parse(itr));
-        let p_op = Token(self.op_token.clone(), PhantomData);
+    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Expr, Error> {
+        let &Operator(ref op_token, ref op_func, ref sub_parser) = self;
+        let left = try!(sub_parser.parse(itr));
+        let p_op = Token(op_token.clone(), PhantomData);
         match p_op.parse(itr) {
             Ok(x) => x,
             Err(Error::ParseError) => return Ok(left),
             Err(x) => return Err(x),
         };
         let right = try!(self.parse(itr).map_err(make_fatal));
-        Ok((self.op_func)(Box::new(left), Box::new(right)))
+        Ok(op_func(Box::new(left), Box::new(right)))
     }
 }
 
-impl <T: Iterator, J> Parser for OptionParser<T, J> {
-    type Itr = T;
-    type Res = Option<J>;
+impl <P: Parser> Parser for OptionParser<P> {
+    type Itr = P::Itr;
+    type Res = Option<P::Res>;
 
-    fn parse(&self, itr: &mut Peekable<T>) -> Result<Option<J>, Error> {
-        match self.sub_parser.parse(itr) {
+    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Option<P::Res>, Error> {
+        let &OptionParser(ref parser) = self;
+        match parser.parse(itr) {
             Ok(x) => return Ok(Some(x)),
             Err(Error::ParseError) => return Ok(None),
             Err(e) => return Err(e)
@@ -258,17 +262,17 @@ impl <T: Iterator<Item=String> + 'static> Parser for ExprParser<T>
     fn parse(&self, itr: &mut Peekable<T>) -> Result<Expr, Error> {
         // recursively parse '(' Expr ')'
         let recur = PairParser(
-            Box::new(Token("(".to_string(), PhantomData)),
-            Box::new(PairParser(
-                Box::new(ExprParser(PhantomData)),
-                Box::new(Token(")".to_string(), PhantomData))
-            )));
+            Token("(".to_string(), PhantomData),
+            PairParser(
+                ExprParser(PhantomData),
+                Token(")".to_string(), PhantomData)
+            ));
 
-        let mut parser: Box<Parser<Itr=_, Res=Expr>> =
-            Box::new(Alternative(
-                    Box::new(Literal(PhantomData)),
-                    Box::new(Map(Box::new(recur), |(_,(x,_))| x))));
+        let atom = Alternative(Literal(PhantomData),
+                               Map(recur, |(_,(x,_))| x));
 
+        // TODO: boxing could be avoided using a macro
+        let mut arith_expr: Box<Parser<Itr=T,Res=Expr>> = Box::new(atom);
         let arith_ops = vec![
             ("*", ArithOp::Mul), ("%", ArithOp::Mod), ("/", ArithOp::Div),
             ("+", ArithOp::Add), ("-", ArithOp::Sub),
@@ -277,13 +281,17 @@ impl <T: Iterator<Item=String> + 'static> Parser for ExprParser<T>
             (">", ArithOp::Greater), (">=", ArithOp::GreaterEq),
         ];
         for (op, ao) in arith_ops {
-        let op_func = move |a,b| Expr::ArithOp(ao, a, b);
-        parser = Box::new(operator(op, op_func, parser));
+            let op_func = move |a,b| Expr::ArithOp(ao, a, b);
+            arith_expr =
+                Box::new(Operator(op.to_string(), op_func, arith_expr));
         }
 
-        parser = Box::new(operator("&", |a,b| Expr::And(a,b), parser));
-        parser = Box::new(operator("|", |a,b| Expr::Or(a,b), parser));
+        let and_expr =
+            Operator("&".to_string(), |a,b| Expr::And(a,b), arith_expr);
+        let or_expr =
+            Operator("|".to_string(), |a,b| Expr::Or(a,b), and_expr);
 
+        let parser = or_expr; // TODO: cache?
         parser.parse(itr)
     }
 }
