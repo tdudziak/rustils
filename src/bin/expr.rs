@@ -152,6 +152,22 @@ impl <A, B> Parser for Alternative<A, B> where
     }
 }
 
+struct ParseAll<P: Parser>(P);
+
+impl<P: Parser> Parser for ParseAll<P> {
+    type Itr = P::Itr;
+    type Res = P::Res;
+
+    fn parse(&self, itr: &mut Peekable<Self::Itr>) -> Result<Self::Res, Error> {
+        let &ParseAll(ref parser) = self;
+        let res = try!(parser.parse(itr));
+        match itr.peek() {
+            Some(_) => Err(Error::FatalParseError),
+            None => Ok(res)
+        }
+    }
+}
+
 struct OptionParser<P: Parser>(P);
 
 impl<T: Iterator<Item=String>> Parser for Token<T> {
@@ -298,7 +314,7 @@ impl <T: Iterator<Item=String> + 'static> Parser for ExprParser<T>
 
 fn main() {
     let mut itr = env::args().skip(1).peekable();
-    let parser = ExprParser(PhantomData);
+    let parser = ParseAll(ExprParser(PhantomData));
     let expr = parser.parse(&mut itr).unwrap();
     println!("{}", expr.eval().unwrap());
 }
