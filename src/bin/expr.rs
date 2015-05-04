@@ -6,19 +6,25 @@ use std::thread;
 use std::iter::Peekable;
 
 #[derive(Debug)]
-enum Error { ParseError }
+struct Error(String);
+
+impl Error {
+    fn new<T: fmt::Debug>(expected: &'static str, found: T) -> Error {
+        Error(format!("invalid expression: expected {} but found {:?}",
+                      expected, found))
+    }
+}
 
 impl error::Error for Error {
     fn description(&self) -> &str {
-        match self {
-            &Error::ParseError => "invalid expression",
-        }
+        "invalid expression"
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        (self as &error::Error).description().fmt(f)
+        let &Error (ref msg) = self;
+        msg.fmt(f)
     }
 }
 
@@ -99,20 +105,24 @@ impl <T> Parser<T> where T: Iterator<Item=String> {
             // try to parse a parenthesized subexpression
             self.tokens.next();
             let sub = try!(self.parse_expr());
-            if self.tokens.next() != Some(")".to_string()) {
-                return Err(Error::ParseError)
+            let found = self.tokens.next()
+                                   .unwrap_or("end of input".to_string());
+            if found != ")".to_string() {
+                // TODO: use a macro for this
+                return Err(Error::new("a closing paren", found))
             }
             Ok(sub)
         } else {
             let tok = match self.tokens.next() {
                 Some(x) => x,
-                None    => return Err(Error::ParseError),
+                None    => return Err(Error::new("an expression",
+                                                 "end of input")),
             };
 
             if tok.chars().all(|x| x.is_alphanumeric()) {
                 Ok(Expr::Literal(tok))
             } else {
-                Err(Error::ParseError)
+                Err(Error::new("an identifier or a number", tok))
             }
         }
     }
@@ -183,7 +193,7 @@ impl <T> Parser<T> where T: Iterator<Item=String> {
     fn parse(&mut self) -> Result<Expr, Error> {
         let expr = try!(self.parse_expr());
         match self.tokens.peek() {
-            Some(_) => Err(Error::ParseError), // unused input
+            Some(x) => Err(Error::new("end of input", x)),
             None    => Ok(expr)
         }
     }
