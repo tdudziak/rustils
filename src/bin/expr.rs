@@ -1,17 +1,17 @@
 use std::env;
 use std::fmt;
 use std::error;
+use std::thread;
 
 use std::iter::Peekable;
 
 #[derive(Debug)]
-enum Error { ParseError, EvalError }
+enum Error { ParseError }
 
 impl error::Error for Error {
     fn description(&self) -> &str {
         match self {
             &Error::ParseError => "invalid expression",
-            &Error::EvalError => "invalid value"
         }
     }
 }
@@ -38,20 +38,20 @@ enum Expr {
 }
 
 impl Expr {
-    fn eval_arith(op: ArithOp, a: i64, b: i64) -> Result<i64, Error> {
+    fn eval_arith(op: ArithOp, a: i64, b: i64) -> i64 {
         match op {
-            ArithOp::Mul => Ok(a * b),
-            ArithOp::Mod => Ok(a % b),
-            ArithOp::Div => if b == 0 { Err(Error::EvalError) }
-                               else { Ok(a / b) },
-            ArithOp::Add => Ok(a + b),
-            ArithOp::Sub => Ok(a - b),
-            ArithOp::Lower => Ok((a < b) as i64),
-            ArithOp::LowerEq => Ok((a <= b) as i64),
-            ArithOp::Equal => Ok((a == b) as i64),
-            ArithOp::NEqual => Ok((a != b) as i64),
-            ArithOp::Greater => Ok((a > b) as i64),
-            ArithOp::GreaterEq => Ok((a >= b) as i64),
+            ArithOp::Mul => a * b,
+            ArithOp::Mod => a % b,
+            ArithOp::Div => if b == 0 { panic!("division by zero") }
+                               else { a / b },
+            ArithOp::Add => a + b,
+            ArithOp::Sub => a - b,
+            ArithOp::Lower => (a < b) as i64,
+            ArithOp::LowerEq => (a <= b) as i64,
+            ArithOp::Equal => (a == b) as i64,
+            ArithOp::NEqual => (a != b) as i64,
+            ArithOp::Greater => (a > b) as i64,
+            ArithOp::GreaterEq => (a >= b) as i64,
         }
     }
 
@@ -59,29 +59,30 @@ impl Expr {
         x.parse().map(|x: i64| x != 0).unwrap_or(x != "")
     }
 
-    fn eval(&self) -> Result<String, Error> {
+    fn eval(&self) -> String {
         match self {
-            &Expr::Literal(ref x) => Ok(x.to_string()),
+            &Expr::Literal(ref x) => x.to_string(),
             &Expr::ArithOp(op, ref ba, ref bb) => {
-                let str_a = try!(ba.eval());
-                let val_a = try!(str_a.parse().map_err(|_| Error::EvalError));
-                let str_b = try!(bb.eval());
-                let val_b = try!(str_b.parse().map_err(|_| Error::EvalError));
-                Expr::eval_arith(op, val_a, val_b).map(|x| x.to_string())
-            }
+                let pnum = |x: String| {
+                    x.parse()
+                     .map_err(|err| panic!("`{}' is not a number: {}", x, err))
+                     .unwrap()
+                };
+                Expr::eval_arith(op, pnum(ba.eval()), pnum(bb.eval())).to_string()
+            },
             &Expr::And(ref ba, ref bb) => {
-                let val_a = try!(ba.eval());
-                let val_b = try!(bb.eval());
+                let val_a = ba.eval();
+                let val_b = bb.eval();
                 if Expr::bool_val(&val_a) && Expr::bool_val(&val_b) {
-                    Ok(val_a)
+                    val_a
                 } else {
-                    Ok("0".to_string())
+                    "0".to_string()
                 }
             }
             &Expr::Or(ref ba, ref bb) => {
-                let val_a = try!(ba.eval());
-                let val_b = try!(bb.eval());
-                if Expr::bool_val(&val_a) { Ok(val_a) } else { Ok(val_b) }
+                let val_a = ba.eval();
+                let val_b = bb.eval();
+                if Expr::bool_val(&val_a) { val_a.to_string() } else { val_b.to_string() }
             }
         }
     }
@@ -202,6 +203,16 @@ impl <T> Parser<T> where T: Iterator<Item=String> {
 }
 
 fn main() {
-    let expr = Parser::new(env::args().skip(1)).parse().unwrap();
-    println!("{}", expr.eval().unwrap());
+    let expr = Parser::new(env::args().skip(1)).parse();
+    let eval_thread = thread::spawn(|| {
+        let result = expr.unwrap_or_else(|x| panic!("{}", x)).eval();
+        println!("{}", result)
+    });
+    match eval_thread.join() {
+        Ok(_) => (),
+        Err(err) => {
+            let err_msg: Option<&String> = err.downcast_ref();
+            println!("error: {}", err_msg.unwrap())
+        }
+    }
 }
