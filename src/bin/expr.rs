@@ -226,3 +226,59 @@ fn main() {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::Parser;
+
+    fn eval_expr(tokens: &[&'static str]) -> String {
+        Parser::new(tokens.iter().map(|x| x.to_string()))
+            .parse().unwrap().eval()
+    }
+
+    #[test]
+    fn basic_arithmetic() {
+        let tokens = ["1", "+", "2", "*", "3", "=", "7"];
+        assert_eq!("1".to_string(), eval_expr(&tokens));
+    }
+
+    #[test]
+    fn parens() {
+        let tokens = ["2", "*", "(", "3", "+", "4", ")"];
+        assert_eq!("14".to_string(), eval_expr(&tokens));
+    }
+
+    #[test]
+    fn relational_operators() {
+        let one = "1".to_string();
+        let zero = "0".to_string();
+        assert_eq!(one, eval_expr(&["1", ">", "2", "/", "100"]));
+        assert_eq!(zero, eval_expr(&["1", "<", "2", "/", "100"]));
+        assert_eq!(one, eval_expr(&["102", "=", "2", "+", "100"]));
+        assert_eq!(zero, eval_expr(&["102", "!=", "2", "+", "100"]));
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid expression")]
+    fn unclosed_paren() {
+        eval_expr(&["1", "+", "(", "3"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid expression")]
+    fn trailing_garbage() {
+        eval_expr(&["2", "*", "2", "garbage"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid expression")]
+    fn empty_input() {
+        eval_expr(&[]);
+    }
+
+    #[test]
+    fn bind_left() {
+        assert_eq!("2".to_string(), eval_expr(&["3", "*", "2", "/", "3"]));
+        assert_eq!("0".to_string(), eval_expr(&["2", "/", "3", "*", "3"]));
+    }
+}
