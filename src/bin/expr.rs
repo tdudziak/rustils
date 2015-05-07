@@ -28,6 +28,17 @@ impl fmt::Display for Error {
     }
 }
 
+macro_rules! parser_expect(
+    ($expected: expr, $found: expr, $desc: expr) => (
+        if $found != $expected.to_string() {
+            return Err(Error::new($desc, $found))
+        }
+    );
+    ($expected: expr, $found: expr) => (
+        parser_expect!($expected, $found, $expected)
+    )
+);
+
 #[derive(Debug,Copy,Clone)]
 enum ArithOp {
     Mul, Mod, Div,
@@ -107,10 +118,8 @@ impl <T> Parser<T> where T: Iterator<Item=String> {
             let sub = try!(self.parse_expr());
             let found = self.tokens.next()
                                    .unwrap_or("end of input".to_string());
-            if found != ")".to_string() {
-                // TODO: use a macro for this
-                return Err(Error::new("a closing paren", found))
-            }
+
+            parser_expect!(")", found, "a closing paren");
             Ok(sub)
         } else {
             let tok = match self.tokens.next() {
